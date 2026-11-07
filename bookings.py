@@ -7,36 +7,83 @@ from room_validator import roomobjects
 from pricing import calculate_price, calculate_loyalty_discount, cal_final_amount
 from exceptions import invalidstatuschange
 class Booking:
-
     def __init__(self, bookingid, bookingstatus="CONFIRMED"):
         self.bookingid = bookingid
         self.__bookingstatus = bookingstatus
-
     def get_bookingstatus(self):
         return self.__bookingstatus
-
     def change_status(self, new_status):
-
         if self.__bookingstatus == "CONFIRMED":
-
             if new_status == "CHECKED_IN" or new_status == "CANCELLED":
                 self.__bookingstatus = new_status
             else:
                 raise invalidstatuschange("Invalid status change")
-
         elif self.__bookingstatus == "CHECKED_IN":
-
             if new_status == "CHECKED_OUT":
                 self.__bookingstatus = new_status
             else:
                 raise invalidstatuschange("Invalid status change")
-
         else:
             raise invalidstatuschange("Status cannot be changed")
-
     def __str__(self):
         return f"Booking ID: {self.bookingid}, Status: {self.__bookingstatus}"
-
+def search_room_availability():
+    cursor = databaseaccess.cursor
+    print("\nsearch room availability")
+    roomtype = input("enter room type: ").strip().lower()
+    if roomtype not in ["standard", "deluxe", "suite"]:
+        print("invalid room type.")
+        return
+    checkin = input("enter check-in date: ")
+    checkout = input("enter check-out date: ")
+    try:
+        checkin_date = datetime.strptime(checkin, "%d-%m-%Y").date()
+        checkout_date = datetime.strptime(checkout, "%d-%m-%Y").date()
+    except ValueError:
+        print("invalid date format.")
+        return
+    today = date.today()
+    if checkin_date < today:
+        print("Check-in date cannot be in the past")
+        return
+    if (checkin_date - today).days > 180:
+        print("Check-in date cannot more than 180 days.")
+        return
+    nights = (checkout_date - checkin_date).days
+    if nights < 1 or nights > 30:
+        print("you stay only btwn 1 and 30 nights")
+        return
+    numberofguests = input("enter number of guests: ")
+    try:
+        numberofguests = int(numberofguests)
+    except ValueError:
+        print("invalid number of guests.")
+        return
+    if numberofguests <= 0:
+        print("number of guests must be greater than zero.")
+        return
+    checkin_db = checkin_date.strftime("%Y-%m-%d")
+    checkout_db = checkout_date.strftime("%Y-%m-%d")
+    cursor.execute("""SELECT roomno FROM bookings WHERE bookingstatus IN ('CONFIRMED', 'CHECKED_IN') AND checkin < ? AND checkout > ? """, (checkout_db, checkin_db))
+    booked_rooms = cursor.fetchall()
+    unavailable_rooms = []
+    for room in booked_rooms:
+        unavailable_rooms.append(room[0])
+    print("\navailable rooms:")
+    available_count = 0
+    for room in roomobjects:
+        if room.roomtype.lower() == roomtype:
+            if room.roomno not in unavailable_rooms:
+                if numberofguests <= room.max_guests():
+                    available_count += 1
+                    print("\nroom number:", room.roomno)
+                    print("room type:", room.roomtype)
+                    print("floor:", room.floornumber)
+                    print("price per night: Rs.", room.base_tariffcal())
+    if available_count == 0:
+        print("\nNo rooms available for the selected room type and guests number you entered")
+    else:
+        print("\nTotal Available Rooms:", available_count)
 def create_booking():
     while True:
         guestname=input("Enter Guest Name:")
@@ -65,7 +112,6 @@ def create_booking():
         if email=="":
             print("email cannot be empty")
             continue
-
         if not email.endswith("@gmail.com"):
             print("enter valid email")
             continue
@@ -86,24 +132,19 @@ def create_booking():
         checkin=input("enter your check in date(dd-mm-yyyy)")
         try:
             checkin_date=datetime.strptime(checkin,"%d-%m-%Y")
-            today=datetime.strptime(datetime.today().strftime("%d-%m-%Y"),"%d-%m-%Y")
-
+            today=date.today()
             if checkin_date<today:
                 print("checkin cannot be in past.")
                 continue
             elif (checkin_date - today).days>180:
                 print("cannot checkin 180 days ahead")
-
             else:
                 break
-
-
         except ValueError:
             print("check and enter valid date ")
             continue
     while True:
         checkout=input("enter your checkout date(%d-%m-%Y)")
-
         try:
             checkout_date=datetime.strptime(checkout,"%d-%m-%Y")
             if checkout_date<=checkin_date:
@@ -118,23 +159,21 @@ def create_booking():
         except ValueError:
             print("enter valid checkout date ")
             continue
-
     while True:
         roomtype = input("Enter room type").strip().lower()
         if roomtype not in ["standard", "deluxe", "suite"]:
             print("room type is not valid .")
+            continue
         else:
             break
     while True:
         try:
             numberofguests=int(input("Enter number of guests:"))
             break
-
         except ValueError:
             print("enter valid guests data")
     if numberofguests > 2 and roomtype == "standard":
         print("You can try Deluxe or Suite room")
-
     elif numberofguests > 3 and roomtype == "deluxe":
         print("You can try Suite room")
 
@@ -171,7 +210,6 @@ def create_booking():
                     selected_room=room
     else:
         print("your requested room is not available")
-        other_rooms=[]
         for room in roomobjects:
             if room.roomtype!=roomtype and numberofguests<=room.max_guests():
                 cursor.execute("""select roomno from bookings where roomno=? and bookingstatus in ('confirmed','checked_in') and checkin<? and checkout>?""",(room.roomno,checkout_db,checkin_db))
@@ -330,13 +368,138 @@ def check_out():
         """, (booking.get_bookingstatus(), bookingid))
 
         connection.commit()
+        generate_invoice(bookingid)
 
         print("Check-out is successful")
         print(booking)
 
     except invalidstatuschange as error:
         print(error)
+def cancel_booking():
 
+    bookingid = input("enter booking id:- ")
+
+    cursor = databaseaccess.cursor
+    connection = databaseaccess.connection
+
+    cursor.execute("""
+        SELECT bookingid, checkin, bookingstatus, totalprice FROM bookings WHERE bookingid = ? """, (bookingid,))
+
+    result = cursor.fetchone()
+
+    if result is None:
+        print("Booking not found.")
+        return
+
+    bookingid = result[0]
+    checkin_date = datetime.strptime(result[1], "%Y-%m-%d").date()
+    bookingstatus = result[2]
+    totalprice = result[3]
+
+    booking = Booking(bookingid, bookingstatus)
+
+    if bookingstatus != "CONFIRMED":
+        print("Only confirmed bookings can be cancelled.")
+        return
+
+    days_before_checkin = (checkin_date - date.today()).days
+
+    if days_before_checkin >= 7:
+        refundamount = totalprice
+
+    elif days_before_checkin >= 2:
+        refundamount = totalprice * 50 / 100
+
+    else:
+        refundamount = 0
+
+    try:
+        booking.change_status("CANCELLED")
+
+        cursor.execute("""
+            UPDATE bookings
+            SET bookingstatus = ?, refundamount = ?
+            WHERE bookingid = ?
+        """, (
+            booking.get_bookingstatus(),
+            refundamount,
+            bookingid
+        ))
+
+        connection.commit()
+
+        print("Booking cancelled successfully.")
+        print("Booking ID:", bookingid)
+        print("Refund Amount:", refundamount)
+
+    except invalidstatuschange as error:
+        print(error)
+def view_booking_details():
+
+    bookingid = input("Enter Booking ID: ")
+
+    cursor = databaseaccess.cursor
+
+    cursor.execute("""SELECT bookingid, guestname, mobilenumber, roomno,roomtype, checkin, checkout, numberofguests,bookingstatus, totalprice, roomcharges,extraguestcharges, breakfastcharges,longstaydiscount, loyaltydiscount,
+               gstamount, refundamount FROM bookings WHERE bookingid = ?""", (bookingid,))
+
+    result = cursor.fetchone()
+
+    if result is None:
+        print("Booking not found.")
+        return
+
+    print("----booking details----")
+
+    print("Booking ID:", result[0])
+    print("Guest Name:", result[1])
+    print("Mobile Number:", result[2])
+    print("Room Number:", result[3])
+    print("Room Type:", result[4])
+    print("Check-in Date:", result[5])
+    print("Check-out Date:", result[6])
+    print("Number of Guests:", result[7])
+    print("Booking Status:", result[8])
+    print("room charges:", result[10])
+    print("extra guest charges:", result[11])
+    print("breakfast charges:", result[12])
+    print("long stay discount:", result[13])
+    print("loyalty discount:", result[14])
+    print("GST:", result[15])
+    print("total price:", result[9])
+    print("refund amount:", result[16])
+
+    print("................")
+def view_stay_history():
+
+    mobilenumber = input("Enter Guest Mobile Number: ")
+
+    cursor = databaseaccess.cursor
+
+    cursor.execute("""
+        SELECT bookingid, roomno, roomtype, checkin, checkout, bookingstatus, totalprice FROM bookings WHERE mobilenumber = ? ORDER BY checkin DESC """, (mobilenumber,))
+
+    results = cursor.fetchall()
+
+    if len(results) == 0:
+        print("no booking history for this guest")
+        return
+
+    print("stay history of guest:----")
+
+    for booking in results:
+
+        print("\nBooking ID:", booking[0])
+        print("Room Number:", booking[1])
+        print("Room Type:", booking[2])
+        print("Check-in:", booking[3])
+        print("Check-out:", booking[4])
+        print("Booking Status:", booking[5])
+        print("Total Amount:", booking[6])
+
+        print("-----------------------------------")
+
+    print("Total Bookings:", len(results))
 import os
 
 def generate_invoice(bookingid):
@@ -389,24 +552,23 @@ def generate_invoice(bookingid):
 
     os.makedirs("invoices", exist_ok=True)
 
-    filename = bookingid + ".txt"
+    filename = "invoices/" + bookingid + ".txt"
 
     with open(filename, "w", encoding="utf-8") as file:
 
         file.write("Welcome to stayeasy hotel \n")
-
         file.write("booking details:\n")
         file.write("-----------------------------\n")
-        file.write("Booking ID: " + bookingid + "\n")
-        file.write("Guest Name: " + guestname + "\n")
-        file.write("Mobile Number: " + str(mobilenumber) + "\n")
-        file.write("Email: " + email + "\n")
-        file.write("Room Number: " + str(roomno) + "\n")
-        file.write("Room Type: " + roomtype + "\n")
-        file.write("Number of Guests: " + str(numberofguests) + "\n")
-        file.write("Check-in: " + str(checkin) + "\n")
-        file.write("Check-out: " + str(checkout) + "\n\n")
-        file.write("\nNIGHT-BY-NIGHT BREAKDOWN\n")
+        file.write("booking id: " + bookingid + "\n")
+        file.write("guest name: " + guestname + "\n")
+        file.write("mobile number: " + str(mobilenumber) + "\n")
+        file.write("email: " + email + "\n")
+        file.write("room number: " + str(roomno) + "\n")
+        file.write("room type: " + roomtype + "\n")
+        file.write("number of guests: " + str(numberofguests) + "\n")
+        file.write("check-in: " + str(checkin) + "\n")
+        file.write("check-out: " + str(checkout) + "\n\n")
+        file.write("\nnights wise:\n")
         file.write("--------------------------------\n")
 
         for night in nightly_details:
@@ -419,22 +581,22 @@ def generate_invoice(bookingid):
 
         file.write("--------------------------------\n")
 
-        file.write("price breakdown\n")
+        file.write("total price charges:\n")
         file.write("-----------------------------\n")
-        file.write("Room Charges: Rs." + str(roomcharges) + "\n")
-        file.write("Extra Guest Charges: Rs." + str(extraguestcharges) + "\n")
-        file.write("Breakfast Included: " + str(breakfastincluded) + "\n")
-        file.write("Breakfast Charges: Rs." + str(breakfastcharges) + "\n")
-        file.write("Long Stay Discount: Rs." + str(longstaydiscount) + "\n")
-        file.write("Loyalty Discount: Rs." + str(loyaltydiscount) + "\n")
+        file.write("room charges: Rs." + str(roomcharges) + "\n")
+        file.write("extra guest charges: Rs." + str(extraguestcharges) + "\n")
+        file.write("breakfast included: " + str(breakfastincluded) + "\n")
+        file.write("breakfast charges: Rs." + str(breakfastcharges) + "\n")
+        file.write("long stay discount: Rs." + str(longstaydiscount) + "\n")
+        file.write("loyalty discount: Rs." + str(loyaltydiscount) + "\n")
         file.write("GST: Rs." + str(gstamount) + "\n")
 
         file.write("-----------------------------\n")
-        file.write("TOTAL PAID: Rs." + str(totalprice) + "\n")
-        file.write("\n========== THANK YOU ==========\n")
+        file.write("Total paid is: Rs." + str(totalprice) + "\n")
+        
 
     print("Invoice generated successfully!")
-    print("Invoice location:", filename)
+
 
 
                 

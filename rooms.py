@@ -1,7 +1,4 @@
 from abc import ABC,abstractmethod
-import sqlite3
-import databaseaccess
-
 class Room(ABC):
     
     def __init__(self,roomno,roomtype,floornumber):

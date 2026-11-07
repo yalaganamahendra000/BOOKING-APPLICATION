@@ -1,8 +1,4 @@
-import sqlite3
-connection=sqlite3.connect("roomsdata.db")
-cursor=connection.cursor()
 def readcsv(filename,errorfilename):
-    cursor.execute("""create table if not exists roomsdata(roomno int not null primary key,roomtype varchar(25) ,floor int)""")
     roomnumbers=[]
     roomlist=[]
     rooms=["standard","deluxe","suite"]
@@ -55,15 +51,11 @@ def readcsv(filename,errorfilename):
             continue
         roomnumbers.append(roomno)
         roomlist.append((roomno,roomtype,floor))
-        try:
-            cursor.execute("""Insert into roomsdata values(?,?,?)""",(roomno,roomtype,floor))
-        except sqlite3.IntegrityError:
-            print("this room id is already exists in database")
-        connection.commit()
+
     file.close()
     error.close()
     return roomlist
-roomlist=readcsv("rooms.csv","NEWerror.log")
+roomlist=readcsv("rooms.csv","app.log")
 from rooms import StandardRoom,DeluxeRoom,SuiteRoom
 def create_objects(roomlist):
     #roomlist=readcsv("rooms.csv","errors.log")
